@@ -1,0 +1,242 @@
+---
+title: "Confidence Region for Bivariate Exponential Mean Vector estimated by EM"
+output:
+  html_notebook: default
+---
+
+```{r}
+library(MASS)
+library(car)
+```
+
+## EM estimation for Bivariate Exponential Distribution
+
+### Creat Bivaraite Exponential Dataset
+with theta1 = 2, theta2 = 3, common = 0.6
+```{r}
+set.seed(12345)
+ n <- 1000 # sample size
+  lambda1 <- 2
+  lambda2 <- 3
+  common <- 0.6
+  x1 <- rexp(n, rate=lambda1-common)
+  x2 <- rexp(n, rate=lambda2-common)
+  z <- rexp(n, rate=common)
+  y1 <- pmin(x1, z)
+  y2 <- pmin(x2, z)
+data <- cbind(y1,y2)
+```
+
+### E-step: 
+Args:
+  data.matrix: Matrix containing the bivaraite data
+  theta.vector: Vector containing theta1, theta2 and theta0
+Return:
+  Named list containing z, d, and phi
+```{r}
+e_step <- function(data.matrix, theta.vector) {
+  n <- nrow(data.matrix)
+  z <- vector(, n)
+  d <- vector(, n)
+  phi <- vector(, n)
+  theta0 <- theta.vector[3]
+  theta1 <- theta.vector[1]; theta2 <- theta.vector[2]
+ 
+   for (row in 1:n){
+    y1 <- data.matrix[row,1]; y2 <- data.matrix[row,2]
+    if (y1 < y2) {
+      z[row] <- y2 + theta2/(theta2+theta0)/theta0
+      d[row] <- y1
+      phi[row] <- y2 + theta0/(theta2+theta0)/theta2
+    }
+    if (y1 > y2) {
+      z[row] <- y1 + theta1/(theta1+theta0)/theta0
+      d[row] <- y1 + theta0/(theta1+theta0)/theta1
+      phi[row] <- y2
+    }
+    if (y1 == y2) {
+      z[row] <- y1
+      d[row] <- y1 + 1/theta1
+      phi[row] <- y2+1/theta2
+    }
+   
+   }
+  list('z.vector'=z, 'd.vector'=d, 'phi.vector'=phi)
+}
+```
+
+### M-step:
+Args:
+  z.vector
+  d.vector
+  phi.vector
+Return:
+ theta.vector: Vector containing theta1, theta2, and theta0
+```{r}
+m_step <- function(z.vector,d.vector,phi.vector) {
+  n <- length(z.vector)
+  theta0 <- n/sum(z.vector)
+  theta1 <- n/sum(d.vector)
+  theta2 <- n/sum(phi.vector)
+  theta.vector <- c(theta1,theta2,theta0)
+  return (theta.vector)
+}
+```
+
+###Main function of EM algorithm:
+Args:
+  data
+  initial.theta.vector
+Return:
+  theta.vector containing converged theta1, theta2 and theta0
+
+```{r}
+em_main <- function(data, initial.theta) {
+  for (i in 1:1000) {
+    if (i ==1) {
+    # Initialization
+    e.step <- e_step(data, initial.theta)
+    theta <- m_step(e.step$z.vector,e.step$d.vector,e.step$phi.vector)
+    }
+    
+    else {
+    # Repeat E and M steps till convergence
+      theta_prev <- theta
+      e.step <- e_step(data, theta)
+      theta <- m_step(e.step$z.vector,e.step$d.vector,e.step$phi.vector)
+      #Convergence check
+      if (identical(theta_prev, theta)){
+        break
+      }
+    }
+  }
+  lamda <- c(theta[1]+theta[3],theta[2]+theta[3],theta[3])
+  return(lamda)
+}
+```
+
+```{r cache=TRUE}
+theta.initial <- c(1, 1, 0.5)
+em_parameter <- em_main(data, theta.initial)
+em_parameter
+cat ("Estimated lambda1 is:", em_parameter[1],"\n")
+cat ("Estimated lambda2 is:", em_parameter[2],"\n")
+cat ("Estimated common is:", em_parameter[3])
+```
+
+
+## Confidence Region for lambda1 and lambda2 in Bivariate Exponential Distribution
+###T2 Method
+
+
+
+###Parametric Bootstramp
+
+#### Step1: Function to Generate Bivaraite Exponential 
+```{r}
+BiExp <- function (lambda1, lambda2, common) {
+  n <- 1000 # sample size
+  x1 <- rexp(n, rate=lambda1-common)
+  x2 <- rexp(n, rate=lambda2-common)
+  z <- rexp(n, rate=common)
+  y1 <- pmin(x1, z)
+  y2 <- pmin(x2, z)
+  return (cbind(y1,y2))
+}
+```
+
+#### Step2: Parameter Bootstramp for Bi-Exponential
+```{r}
+exp.bs <- function(x,y){
+  #Step0: find em estimators 
+  data <- cbind(x,y)
+  theta.initial <- c(1, 1, 0.5)
+  lambda.vector <- em_main(data, theta.initial)
+  #sample with em estimators one time
+  BiExp.lambda <- function (lambda1, lambda2, common){
+    #Step1: sample from Bi-Exponential with estimated parameter
+    sample <- BiExp(lambda1, lambda2, common)
+    
+    #Step2: Compute the estimated lambdas in this sample
+    initial <- c(1, 1, 0.5) #initial parameter for em estimation in each bootstrap sample
+    lambda.sample <- em_main(sample, initial)
+    return (lambda.sample)
+  }
+  
+  #repeat sampling 200 times
+  simlist <- replicate(200, BiExp.lambda(lambda.vector[1],lambda.vector[2], lambda.vector[3]))
+  return (t(simlist))
+}
+
+x <- data[,1]
+y <- data[,2]
+para_bootstrap = exp.bs(x,y) 
+
+```
+
+#Parametric Bootstrap Results
+```{r}
+print (para_bootstrap)
+```
+
+##Non-parametric Bootstramp
+```{r}
+#library(MASS)
+nonp.bs <- function(x,y){
+  
+  sample.lambda <- function(x,y){
+    #Step1: sample with raplacement directly from data
+    n = length(x)
+    data = cbind(x,y)
+    index = sample(1:n, size=n, replace=TRUE)
+    sample <- data[index,]
+    #Step2: Compute estimated lambdas in this sample
+    initial <- c(1, 1, 0.5) #initial parameter for em estimation in each bootstrap sample
+    lambda.sample <- em_main(sample, initial)
+    return (lambda.sample)
+  }
+  simlist <- replicate(200, sample.lambda(x,y))
+  return (t(simlist))
+}
+nonp_bootstrap = nonp.bs(x,y)
+```
+
+```{r}
+print (nonp_bootstrap)
+```
+
+## Hoetelling T-squared method
+###This is wrong because the stats does't follow F distribution in this case. The results are just for comparision
+```{r}
+t2.r<- function(x,y){
+  p <- 2
+  n <- length(x)
+  radius <- p*(n-p)/(n-1)*qf(0.95, p, n-p)
+  return (sqrt(radius))
+}
+t2.radius <- t2.r(x,y)
+
+```
+
+
+## Ploting Confidence Region
+### Green line is parametric, while blue line is nonparametric
+```{r}
+library(car)
+
+#Compute the covariance matrix for T2 with parametric_bootstrap results
+s = cov(para_bootstrap)
+s.partial = s[1:2,1:2]
+
+plot(x,y,pch='.',xlim=c(1.5, 2.5), ylim=c(2.5, 3.5),main="Confidence Region for lambdas(2,3) in Bivaraite Exponential" )
+ellipse (center = em_parameter[1:2], shape = s.partial, radius = t2.radius, draw=TRUE, col = 'red') 
+dataEllipse(para_bootstrap[,1], para_bootstrap[,2], levels = c(0.95), col='blue', add=TRUE, pch='.')
+dataEllipse(nonp_bootstrap[,1], nonp_bootstrap[,2], levels = c(0.95), col='green', add=TRUE, pch='.')
+legend("topleft", legend=c("T squared", "Parametric Bootstrap", "Nonparametric Bootstrap"),
+       col=c("red","blue","green"),lty=1)
+```
+
+```{r}
+
+```
+

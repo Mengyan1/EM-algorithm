@@ -1,0 +1,221 @@
+---
+title: "Comparing EM and K-means with GMM"
+output: html_notebook
+---
+
+
+```{r}
+library(dplyr)  #to organize kmeans result, used group_by(), summarize()
+library(ggplot2) #to plot results
+library(ggplot2) #to plot histgram and prob density
+library(mixtools) #EM algorithm 
+```
+
+
+
+##E-step：Expectation Step of the EM Algorithm
+Calculate the posterior probabilities (soft labels) that each component has to each data point.
+Args:
+  sd.vector: Vector containing the standard deviations of each component
+  sd.vector: Vector containing the mean of each component
+  weight.vector: Vector containing the mixing weights  of each component
+Return:
+  Named list containing the loglik and posterior.df
+```{r}
+e_step <- function(x, mu.vector, sd.vector, weight.vector) {
+  comp1.prod <- dnorm(x, mu.vector[1], sd.vector[1]) * weight.vector[1]
+  comp2.prod <- dnorm(x, mu.vector[2], sd.vector[2]) * weight.vector[2]
+  comp3.prod <- dnorm(x, mu.vector[3], sd.vector[3]) * weight.vector[3]
+  sum.of.comps <- comp1.prod + comp2.prod + comp3.prod
+  comp1.rho <- comp1.prod / sum.of.comps
+  comp2.rho <- comp2.prod / sum.of.comps
+  comp3.rho <- comp3.prod / sum.of.comps
+  sum.of.comps.ln <- log(sum.of.comps, base = exp(1))
+  
+  list("loglik" = sum(sum.of.comps.ln),
+       "rho.df" = cbind(comp1.rho, comp2.rho, comp3.rho))
+}
+```
+
+
+##M-Step: Update the Component Parameters
+Arg:
+  x Input data.
+  rho.df Posterior probability data.frame.
+Return:
+  Named list containing the mean (mu), variance (var), and mixing weights (weight) for each component.
+```{r}
+m_step <- function(x, rho.df) {
+  comp1.n <- sum(rho.df[, 1])
+  comp2.n <- sum(rho.df[, 2])
+  comp3.n <- sum(rho.df[, 3])
+  
+  comp1.weight <- comp1.n / length(x)
+  comp2.weight <- comp2.n / length(x)
+  comp3.weight <- comp3.n / length(x)
+  
+  comp1.mu <- sum(rho.df[, 1] * x)/comp1.n
+  comp2.mu <- sum(rho.df[, 2] * x)/comp2.n
+  comp3.mu <- sum(rho.df[, 3] * x)/comp3.n
+  
+  comp1.var <- sum(rho.df[, 1] * (x - comp1.mu)^2)/comp1.n
+  comp2.var <- sum(rho.df[, 2] * (x - comp2.mu)^2)/comp2.n
+  comp3.var <- sum(rho.df[, 3] * (x - comp3.mu)^2)/comp3.n
+
+  list("mu" = c(comp1.mu, comp2.mu, comp3.mu),
+       "var" = c(comp1.var, comp2.var, comp3.var),
+       "weight" = c(comp1.weight, comp2.weight, comp3.weight))
+}
+```
+
+
+##Main function of EM algorithm:
+Iterate through e-step and m-step, 1000 iterations in total
+Stop if the loglikelihood increment is less than 1e-6
+
+Args:
+  x,
+  initial.df, initial mu, sigma and weight
+Return:
+  Named list containing the converged mean (mu), variance (var), and mixing weights (weight) for each component,
+  as well as # of iterations, and log-likelyhood vector.
+```{r}
+em_main <- function(x, initial.df){
+  for (i in 1:1000) {
+    print (i)
+    if (i == 1) {
+    # Initialization
+      e.step <- e_step(x, initial.df[["mu"]], initial.df[["std"]], initial.df[["weight"]])
+      m.step <- m_step(x, e.step[["rho.df"]])
+      prev.loglik <- e.step[["loglik"]]
+      loglik.vector <- e.step[["loglik"]]
+      }
+    else {
+    # Repeat E and M steps till convergence
+      #E-step
+      e.step <- e_step(x, m.step[["mu"]], sqrt(m.step[["var"]]), m.step[["weight"]])
+      #M-step
+      m.step <- m_step(x, e.step[["rho.df"]])
+      #Convergence check
+      loglik.vector <- c(loglik.vector, e.step[["loglik"]])
+      loglik.diff <- e.step[["loglik"]]-prev.loglik
+      if(loglik.diff < 1e-6) {
+        break
+        } 
+      else {
+        prev.loglik <- e.step[["loglik"]]
+        }
+      }
+    }
+  list("mu" = m.step[["mu"]],
+       "var" = m.step[["var"]],
+       "weight" = m.step[["weight"]],
+       "number of iterations" = length(loglik.vector),
+       "loglik" = loglik.vector)
+}
+```
+
+
+Part 0: Generate Data
+Generate a sample of size n = 150 from normal mixture: 
+p1*N(-5; 4) + p2*N(0; 0.25) + p3*N(2, 1) with p1 = 0.5, p2 = 0.3, and p3 = 0.2 
+
+```{r}
+set.seed(1)
+N <- 150
+components <- sample(1:3,prob=c(0.5,0.3,0.2),size=N,replace=TRUE)
+mus <- c(-5, 0, 2)
+sds <- sqrt(c(4, 0.25, 1))
+samples <- rnorm(n=N,mean=mus[components],sd=sds[components])
+samples
+```
+
+
+Part 2. K-means clustering 
+```{r}
+samples.kmeans <- kmeans (samples, 3)
+samples.kmeans
+```
+
+```{r}
+samples.kmeans.cluster <- samples.kmeans$cluster
+samples.df <- data.frame (x = samples, lable = components, kmeans = samples.kmeans.cluster)
+samples.df
+```
+Compute weight
+```{r}
+samples.summary.df <- samples.df %>%
+  group_by(kmeans)  %>%
+  summarize(mu = mean(x), std = sd(x), size = n())
+
+kmeans.summary.df <- samples.summary.df  %>%
+  mutate(weight = size / sum(size))
+kmeans.summary.df
+```
+
+
+
+Part 1.1, EM algorithm
+Use KMeans result as initialization
+
+```{r}
+em.result <- em_main(x = samples, initial.df = kmeans.summary.df)
+em.result
+```
+
+
+part1.3  EM in mixtools 
+```{r}
+mixmdl <- normalmixEM(samples, k = 3)
+print (mixmdl$mu)
+print (mixmdl$sigma)
+print (mixmdl$lambda)
+mix.var <-  mixmdl$sigma^2
+print (mixmdl)
+
+```
+
+Part 1.2 plotting
+```{r}
+
+true.weight = c(0.5, 0.3, 0.2)
+true.mu = c(-5, 0, 2)
+true.var = c(4, 0.25, 1)
+
+plot_mix_comps <- function(x, mu, var, weight){
+  density <- 0
+  for (i in 1:3){
+    density <- density + weight[i]*dnorm(x,mu[i],sqrt(var[i]))
+  }
+  return(density)
+}
+
+ggplot(data.frame(samples), aes(samples)) +
+  geom_histogram(aes(samples, ..density..), binwidth = 0.1, colour = "black", fill = "white" ) +
+  #geom_density() + 
+  stat_function(geom = "line", fun = plot_mix_comps, colour = "red", lwd = 1,
+                               args = list(true.mu, true.var, true.weight)) +
+  stat_function(geom = "line", fun = plot_mix_comps, colour = "green", lwd = 1,
+                               args = list(mixmdl$mu, mix.var, mixmdl$lambda)) +
+  stat_function(geom = "line", fun = plot_mix_comps, colour = "blue", lwd = 1,
+                               args = list(em.result$mu, em.result$var, em.result$weight)) +
+  geom_text(label = "True distribution", x = 2, y = 0.45, color = "red") +
+  geom_text(label = "EM estimate", x = 2, y = 0.4, color = "blue") +
+  geom_text(label = "EM by mixtools", x = 2, y = 0.35, color = "green")
+  
+```
+
+
+
+
+```{r}
+library(MASS)
+Sigma <- matrix(c(8,3,3,2),2,2)
+Sigma
+set.seed(12345)
+data1 <- mvrnorm(n = 50, rep(-2, 2), Sigma)
+data2 <- mvrnorm(n = 50, rep(-2, 2), Sigma)
+
+
+```
+
